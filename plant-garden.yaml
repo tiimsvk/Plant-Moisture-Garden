@@ -1,0 +1,1034 @@
+#-------------------------------------------
+# BUG AND REPAIR AND PLANNED
+#-------------------------------------------
+# control power consumption
+# replace ina219 by ads1115
+# control overcharge supercap
+
+#-------------------------------------------
+# REVISION
+#-------------------------------------------
+# 2023.05.1.1.0
+ # - replace AMS2301 by BME280
+ # - replace TEMT600 by BH1750
+ # - disconnect ADS1115
+ # - measure only supercap voltage on ADC pin
+
+# 2023.07.10
+ # replace BME280 by HTU21D whit heater no condensaye humidity
+ 
+# 2024.03.19
+ # - measure moisture soil whit ADC and PWM unsolder lm555
+ # - delayled I2C start whit custom component
+ # - Add ina219 measure battery / or alter. ads1115
+
+# 2024.03.26
+ # - replace ESP12F to ESP07
+ 
+#-------------------------------------------
+# SUBTITUTIONS - basic definitions and description of the device
+#-------------------------------------------
+substitutions:
+  device_name: plant-garden
+  friendly_name: Plant-Garden
+  created_by: StudioTiiM 2023-2024
+  device_description: "Soil sensor measure weather and soil powered supercap and solar"
+
+#-------------------------------------------
+# DEFINE PINS AND VARIABILES
+# CIRCUIT AND MODULES - basic definitions and description of the device
+#-------------------------------------------
+
+ # ----- MCU -----
+  # Module: Ai-Thinker ESP8266-12F
+   # Circuit: Solder on adapter esp8266
+   # Power Consumption: 
+    # Peak start:     440mA
+    # Peak wifi:      272mA https://www.homeassistant-cz.cz/download/file.php?id=1185&mode=view) 
+    # Peak Normal:     71mA 
+    # Peak Wifi off:   22mA
+    # DeepSleep:     ~ 65μA
+   # Specification: Chip Family: ESP8266 / Chip Model: ESP8266EX / Chip ID: 00BC7BB7 / MAC Address: A4:E5:7C:BC:7B:B7 / Number of Cores: 1 / CPU Frequency: 80MHz / Ram: 80kB / Flash: 1Mb
+
+   # Description pins:
+    # PINS ESP8266 | FUNCTION     | INPUT | OUTPUT | ADC | PWM | I2C(only one) | SPI  | RESISTOR             | BOOT       | FLASH   | HIGH AT BOOT | BOOT FAILS |
+    # -------------------------------------------------------------------------------------------------------------------------------------------------------------
+    # EN           |                                                                  | 10.0k PULLUP adapter |                                     |
+    # RST          |                                                                  | 12.0k PULLUP internal|                                     |
+    # ADC0      A0 | ANALOG ADC0  |       |        | OK  |     |               |      |                      |           |          |              |
+    # GPIO0     D3 | STRAPPING    | OK!   | OK!    |     | OK  | OK            |      | 10.0k PULLUP         | PULLUP    | pulldown | HIGH 110ms*6 | LOW
+    # GPIO01    TX | TX           | OK!*1 | OK     |     | OK  | OK            |      |                      |           |          | HIGH         | LOW
+    # GPIO02    D4 | ON BOARD LED | OK    | OK     |     | OK  | OK            |      | 10.0k PULLUP         | PULLUP    |          | HIGH 70ms*6  | LOW
+    # GPIO03    RX | RX           | OK    | OK!*1  |     | OK  | OK            |      |                      |           |          | HIGH         |
+    # GPIO04    D2 | SDA          | OK    | OK     |     | OK  | OK*2          |      |                      |           |          |              |
+    # GPIO05    D1 | SCL          | OK    | OK     |     | OK  | OK*2          |      |                      |           |          |              |
+    # GPIO06       | INTERNAL SPI |       |        |     |     |               | CLK  |                      |           |          |              |
+    # GPIO07       | INTERNAL SPI |       |        |     |     |               | MISO |                      |           |          |              |
+    # GPIO08       | INTERNAL SPI |       |        |     |     |               | MOSI |                      |           |          |              |
+    # GPIO09       | INTERNAL SPI | OK*7  | OK*7   |     |     |               | HD   |                      |           |          | HIGH         |
+    # GPIO10       | INTERNAL SPI | OK*7  | OK*7   |     |     |               | WP   |                      |           |          | HIGH         |
+    # GPIO11       | SPI CSC/CMD  |       |        |     |     |               | CS   |                      |           |          |              |
+    # GPIO12    D6 |              | OK    | OK     |     | OK  | OK            | MISO |                      |           |          | HIGH 110ms   |
+    # GPIO13    D7 |              | OK    | OK     |     | OK  | OK            | MOSI |                      |           |          | HIGH 110ms   |
+    # GPIO14    D5 |              | OK    | OK     |     | OK  | OK            | SCLK |                      |           |          | HIGH 110ms   |
+    # GPIO15    D8 | STRAPPING    | OK!   | OK!    |     | OK  | OK            | CS   | 10k PULLDOWN adapter | PULLDOWN  |          | LOW  110ms   | HIGH
+    # GPIO16    D0 | STRAPPING    | OK*4  | OK*5   |     | OK  | OK            |      | 470 -> RST*3         | PULLUP    | PULLUP   | HIGH 110ms*5 |
+
+    # *1 Disable hardware uart. logger baud_rate: 0
+    # *2 recommended I2C
+    # *3 Enable deep sleep (After enable sleep mode it is broken on any element, GPIO is still in the high state and if it is low, the mcu is reset)
+    # *4 No interrupt
+    # *5 after boot falls ~110ms to ~ 1V
+    # *6 oscillates
+    # *7 freeing up GPIO9 and GPIO10:
+     # Source: http://smarpl.com/content/esp8266-esp-201-module-freeing-gpio9-and-gpio10
+     # Since it is supported by both ESP8266 and flash chip (W25Q32FV or similar) the Quad I/O SPI flash interface 
+     # can be downgraded to Dual I/O SPI thus freeing two data lines (SD_DATA2 and SD_DATA3) and making them available 
+     # as GPIOs (GPIO9 and GPIO10, marked as D2 and D3 on ESP-201 board).
+      # Chip: W25Q32FV
+       # Pinout: QUAD
+
+        # N.| GPIO   | ESP    | Pin | Scheme | Pin   | ESP    | GPIO   | N.
+        #                            +----+
+        # 1 | GPIO11 | SD_CMD | /CS -|°   |-  VCC   |   VCC  | VCC    | 8
+        # 2 | GPIO07 | SD_D0  | DO  -|    |-  /HOLD | SD_D2  | GPIO09 | 7
+        # 3 | GPIO10 | SD_D3  | /WP -|    |-  CLK   | SD_CLK | GPIO06 | 6
+        # 4 | GND    | GND    | GND -|    |-  DI    | SD_D1  | GPIO08 | 5
+        #                            +----+
+       # Pinout: DUAL
+       # platformio_options:
+       #   board_build.flash_mode: dio # releasing GPIO09 and GPIO10
+
+        # N.| GPIO   | ESP    | Pin | Scheme | Pin   | ESP    | GPIO   | N.
+        #                            +----+
+        # 1 | GPIO11 | SD_CMD | /CS -|°   |-  VCC   |   VCC  | VCC    | 8
+        # 2 | GPIO07 | SD_D0  | DO  -|    |-  /HOLD | GND    | GND    | 7
+        # 3 | GND    | GND    | /WP -|    |-  CLK   | SD_CLK | GPIO06 | 6
+        # 4 | GND    | GND    | GND -|    |-  DI    | SD_D1  | GPIO08 | 5
+        #                            +----+
+
+    # GPIO08 and GPIO09 pulldown invalid on boot
+    # Current draw 12mA max per GPIO
+    # ESP8266 GPIO Behaviour at Boot: https://rabbithole.wwwdotorg.org/2017/03/28/esp8266-gpio.html
+
+# ----- ELECTRICITY -----
+ # ----- POWER SUPPLY -----
+  # Module: Super capacitor
+   # Specification: 2.7V 22F
+   # Circuit: 2x connected in series out 5.5V
+   # Converting energy:
+    # F - mAh
+    # mAh = (F * Delta V / 3600) * 1000 = (22 * 2 /3600) * 1000 = 12.2mAh
+   # Teoretical Life on SuperCap:
+    # Battery Capacity: 12.2mAh
+    # Voltage: 3.3V
+    # Running Time: 12s
+    # Running current: 80mA
+    # Idle Time: 3584s
+    # Idle Current: 20μA
+    
+    # Average Consumption: 375.5μA
+    # Battery Life: 1.353d
+    # Watt-hours: 40.26mWh
+
+ # ----- MEASURE -----
+  # Module: INA219 High Side DC Current
+   # Specification: Dimension 25x22mm / Voltage: Operating 3 ~ 5.5V, max in 32V / Resolution: 3.2A 12bit / Accuracy: ±1% / Operational Range: Temperature: -25 ~ +85°C
+   # Shunt resistor: 100mΩ max 320mV
+    # Math: shunt_voltage / shunt_resistor = 0.32V / 0.1Ω = 3.2A know values: 0.144V / 1.44A = 0.1Ω
+   # Consumption: Standby 15μA / Normal 1mA
+   # Circuit: Interface: I2C 
+    # address: 
+      # A1   A2
+      # -    -     0x40
+      # SOLD -     0x44
+      # -    SOLD  0x41
+      # SOLD SOLD  0x45
+  ina_shunt_resistor: 0.1 ohm
+  ina_max_voltage:    16.0V
+  ina_max_current:    1.0A
+  
+  # OLD:
+  # -----------------
+  # ADC Voltage supercap
+  # ADC reading whit transistor
+  # Enable bipolar transistor: 2N3906 PNP and 2N7000 mofset NPN
+   # Base resistor calculate: 
+    # hFE:           60
+    # iL (load A):   0.001A
+    # Vi (base):     3.3V
+    # Base resistor: Vi/(iL/hFE)/1000 = 3.3/(0.001/60)/1000 = 198kΩ => 220kΩ
+  # -----------------
+
+ # ----- SOLAR PANEL -----
+  # Module: Solar panel 2Wp polycrystalline 5V
+   # Specification: Pmax 2W / Voltage Vmp: 5.0V Voc: 5.0V / Imp: 400mA Isc: 400mA / dimension: 94x157x2mm / Operating temperature: -40 ~ +85°C / Wafer: class A polysilicon / Process: EVA lamination 
+   # Circuit: protected shotky diode 1N5817 drop 0.2V
+  width_panel:  "0.07" # m
+  height_panel: "0.14" # m
+
+ # ----- SUPERVISOR -----
+  # Module: LMS33460 3V under voltage detector
+   # Specification: Vin 0.8 ~ 7V / open drain out / SC70-5 package / Out current 30mA / 
+   # Power consumption: disable 35µA / enable 45µA
+   # Settings: 
+    # Default: Falling 2.85 ~ 3.15V / Rising (change using divider): 0.095 ~ 0.215V / Delay time: 70 ~ 130µs
+  # Circuit: 
+   # Voltage divider: Supercap -> Protect diode 1N5817 -> VCC -> Trim 103 (7.07kΩ) -> In -> 100kΩ -> GND (VCC -> 470kΩ -> Out)
+   # Mofset: Logic power mofset NPN FQP30N06L Gate -> 220Ω -> Out supervisor
+  # HYSTERESIS  OFF    ON     
+   # SuperCAP: 3.3V   3.56V
+
+ # ----- LDO -----
+  # Module: Holtek HT7833
+   # Specification: Voltage in 0 ~ 8V out fixed 3.3V 2% / max voltage drop 360mV / current max 0.5A / 
+   # Protection: overtemperature / current limiting
+   # Power consumption: Quiescent current 4µA
+   # Circuit: VIN -> 2x ceramic 10μF -> GND / VOUT -> PPTC FUSE 0.5A 6V -> VOUT / VOUT -> 470μF 6.3V + 680μF 25V -> GND
+
+ # ----- LEDS -----
+  # Modul: Status led
+   # Specification: on esp board smd red led
+    # Modification: remove on board led and solder red whit additional 1KΩ resistor (+ on board 470Ω - down power consumption)
+    # Power consumption: 328µA
+  status_led: GPIO02
+  # Modul: led red diode
+   # Specification: red led 3mm
+    # Circuit: GPIO -> LED -> 2kΩ -> VCC(after deep sleep no light on)
+    # Power consumption: 500µA
+  indicator_led: GPIO0
+
+ # ----- POWER SENSORS -----
+  # OLD:
+  # Modul: NPN power transistor 2N7000
+   # Specification: power all measure modules (reduction of consumption)
+   # Circuit: GND -> Collector / GPIO -> 1kΩ -> Base / Emitter -> GND out sensor
+  # NEW: connected i2c, dallas device and pullup resistor i2c
+  power_pin: GPIO12
+
+ # ----- SOIL MOISTURE SENSOR -----
+ # OLD 
+ # WHIT MOISTURE ADC
+  # Module: Soil moisture sensor
+   # Specification: Voltage 3.3 ~ 12V / Current working: 20mA, Output 30mA / Dimension: 36x15x7 mm / PCB module whit LM393 comparator
+   # Modification: unsolder leds (reducer consumption)
+   # Power consumption: 1.6mA
+   # Settings:
+  #moisture_dry: 3.0V
+  #moisture_wet: 1.85V
+  #moisture_adc_pin: A0_GND
+  #moisture_enable_pin: GPIO12
+  #moisture_stabilize_time: 15s
+
+ # WHIT PWM SIGNAL INPUT
+  # Module: Capacitive Soil Moisture Sensor v2.0
+   # Specification: Voltage 3.3 ~ 5.5V / Current working: 4.5mA / Dimension: 99x16 mm / PCB module whit TLC555 timer
+   # Modification: https://thecavepearlproject.org/2020/10/27/hacking-a-capacitive-soil-moisture-sensor-for-frequency-output/
+    # Unsolder all smd chips on board
+    # Create new circuit on PCB whit LMC555 timer
+    # Output PWM signal
+   # Power consumption: 1.6µA
+   # Settings:
+  # moisture_dry: 35kHz
+  # moisture_wet: 10kHz
+  # No stabilization time
+   # dry sand: 246kHz
+   # middle wet soil: 210kHz
+  # Whit 1 day stabilization time:
+   # Dry > 35 000
+   # Wet < 10 000 
+  
+  # NEW modifications
+  # WHIT PWM SIGNAL ESP AND MEASURE ADC
+  # PINOUT:
+    #                                                       DIVIDER ESP8266 1V ADC
+    # GND  <---+      +--< GPIO PWM   +--------+-----+------ R3  
+    #          |      |               |        |     |      680kΩ
+    #          |      |               ˄        |     -       +--------> GPIO ADC
+    #        PROBE   R1              D1       R2    C1 1µF   R4  
+    #          |     10kΩ            1n4148   1MΩ    -      680kΩ
+    #          |      |               |        |     |       |
+    #          +------+---------------+        +-----+-------+--> GND
+    # 
+  moisture_adc_pin:    A0
+  moisture_pwm_pin:    GPIO13
+  moisture_frequency:  62000 Hz # 62kHz at this frequency, the pwm signal is still correct, at higher frequencies, the software pwm on the esp8266 can no longer keep up.
+  moisture_brightness: 10%     # 10% is correct ADc voltage and has the largest range
+  moisture_dry:        840mV            
+  moisture_wet:        240mV
+  
+  # How to measure moisture soil:
+   # https://www.mdpi.com/1424-8220/21/15/5110
+   # https://thecavepearlproject.org/2020/10/27/hacking-a-capacitive-soil-moisture-sensor-for-frequency-output/
+   # https://makersportal.com/blog/2020/5/26/capacitive-soil-moisture-calibration-with-arduino
+
+ # ----- AMBIENT LIGHT SENSOR -----
+ # OLD WHIT ADC
+  # Module: TEMT6000
+   # Specification: Voltage max. 6V / silicon  NPN  epitaxial  planar  phototransistor / Operating Temperature: -40 ~ +85°C / Angle of Half sensitivity: 60° / Wavelength of Peak Sensitivity: 570nm / Range of Spectral Bandwidth: 360 ~ 970nm
+   # Conection: on module GND -> 10kΩ -> GPIO -> NPN -> VCC
+   # Power consumption: 20mA (change whit intensity light)
+   # Measure and formula calculate lux  https://devices.esphome.io/devices/temt6000
+    # I = adc_value/10000kΩ
+    # The datasheet for the TEMT6000 specifies a proportional correlation between current and illuminance: Every 2 µA of current correlates to 1 lx in the illuminance.
+  #temt6000_resistor: "10000" #Ω
+  #temt6000_amps: "2000000" #mA
+    # max lux = 3.3V * 2000000 /10000 = 660lux / we adjust as much as possible using the cover
+    # No real calibration is currently used.
+    # Calibration designed for the exterior.
+  #temt6000_adc_pin: A1_GND
+
+ # NEW WHIT I2C
+  # Module: BH1750 GY-302 lux meter
+   # Specifications: 3V ~ 3.6V / Range:  1 ~ 65 535 lx
+   # Circuit: Interface: I2C address: 0x23
+   # Consumption: normal 4.4mA
+   # Modification: unsolder ldo 602K
+   # http://wiki.sunfounder.cc/index.php?title=GY-302_BH1750_Digital_Light_Intensity_Module
+   
+   # LUX wiki
+    # Illuminance (lux) | Surfaces illuminated by
+    # -----------------------------------------------
+    # 0.0001 	          | Moonless, overcast night sky (starlight)[5]
+    # 0.002 	          | Moonless clear night sky with airglow[5]
+    # 0.05–0.3 	        | Full moon on a clear night[6]
+    # 3.4 	            | Dark limit of civil twilight under a clear sky[7]
+    # 20–50 	          | Public areas with dark surroundings[8]
+    # 50 	              | Family living room lights (Australia, 1998)[9]
+    # 80 	              | Office building hallway/toilet lighting[10][11]
+    # 100 	            | Very dark overcast day[5]
+    # 150 	            | Train station platforms[12]
+    # 320–500 	        | Office lighting[9][13][14][15]
+    # 400 	            | Sunrise or sunset on a clear day.
+    # 1000 	            | Overcast day;[5] typical TV studio lighting
+    # 10,000–25,000 	  | Full daylight (not direct sun)[5]
+    # 32,000–100,000 	  | Direct sunlight
+
+ # ----- TEMPERATURE / HUMIDITY / PRESSURE SENSOR -----
+ # OLD WHIT TX
+  # Module: ASAIR AM2301
+   # Specifications: Voltage: 3.3 ~ 5.2V / Operational Range: Temperature: -40 ~ +80°C Humidity: 0~100% / Resolution: Humidity: 0.1%RH, Temperature 0.1°C / Accuracy: Temperature: +-1°C Humidity: +-3% / Sample period: 2s
+   # Circuit: Interface: one wire SDA
+   # Power consumption: Dormancy: 15μA / Measuring: 500μA / Average: 300μA / whit multimeter 760μA
+   # Measure after enable min. 2s
+  #am2301_pin: GPIO13
+
+ # OLD WHIT I2C
+  # Module: BMP280 - pressure / temperature
+   # Specifications: Voltage: 1.8 ~ 3.6V / Operational Range: Temperature: -40 ~ +85°C Pressure: 300~1100 hPa / Accuracy: Temperature: +-0.01°C Pressure: +-1.3Pa
+   # Circuit: Interface: I2C address: 0x77
+   # Power consumption: normal: 0.4mA measure: 0.7mA sleep: 0.2μA
+   # Cabling: yellow: vcc / brown: gnd / green: sda / white: scl
+
+  # Module: AHT22 - humidity / temperature
+   # Specifications: Voltage: 2.0 ~ 5.5V / Operational Range: Temperature: -40 ~ +85°C Humidity: 0~100% / Accuracy: Temperature: +-0.3°C Humidity: 0.2%RH
+   # Circuit: Interface: I2C address: 0x33
+   # Power consumption: normal: 0.25μA measure: 23μA
+   # Cabling: yellow: vcc / brown: gnd / green: sda / white: scl
+
+ # NEW WHIT I2C
+  # Module: HTU21D - humidity / temperature
+   # Specifications: Voltage: 1.5 ~ 3.6V / Operational Range: Temperature: -40 ~ +125°C Humidity: 0~100% / Accuracy: Temperature: +-0.3°C Humidity: +-2%RH
+   # Heater: VDD= 3V 5.5mW/ΔT=+0.5-1.5°C 
+   # Circuit: Interface: I2C address: 0x40
+   # Power consumption: measure: 0.5mA sleep: 0.1μA
+   # Cabling: yellow: vcc / brown: gnd / green: sda / white: scl
+
+  # Module: Dallas DS18B20
+   # Circuit: 4.7kΩ resistor data pin to VCC
+   # Power consumption: 50uA
+   # Measure: Soil
+   # UPDATE AFTER BOOT: 1s
+  dallas_pin: GPIO14
+
+  # ----- UPDATE TIME -----
+  update_interval: never
+  stabilize_time: 8000ms
+
+#-------------------------------------------
+# PROTOCOLS
+#-------------------------------------------
+ # ----- PROTOCOLS PINS -----
+  # I2C
+  i2c_sda: GPIO04
+  i2c_scl: GPIO05
+
+ # ----- PROTOCOLS SETTINGS -----
+i2c:
+ sda: $i2c_sda
+ scl: $i2c_scl
+ scan: True
+
+dallas:
+  - pin: "$dallas_pin"
+    update_interval: 2s # Does not work component.update
+
+#-------------------------------------------
+# ESP main settings
+#-------------------------------------------
+# preferences:
+#  flash_write_interval: 10min  # reduce writings to the flash to preserve its health, adjust it on demand
+
+esphome:
+  name: ${device_name}
+  project:
+    name: "studiotiim.plant-garden"
+    version: 2023.09.4.1.0
+  platform: esp8266
+  #board: esp12e
+  board: esp07
+  platformio_options:
+    board_build.f_cpu: 80000000L
+  on_boot:
+    - priority: 900.0
+      then:
+
+        # Wake up info
+        - lambda: |-
+            id(wake_up_reason) = ESP.getResetInfoPtr()->reason; 
+        # Thanks: https://www.homeassistant-cz.cz/viewtopic.php?t=257&hilit=ldo&sid=40796e1ff02dc925e2c1f1bd375a9918&start=20
+        # OTA UPDATE:      4
+        # WAKE DEEP SLEEP: 5
+        # RESET:           6
+        # POWER ON:        0
+
+    #- priority: 800.0
+    # then:
+        # power switch sensors
+        #- switch.turn_on: power_switch
+
+
+    - priority: 200.0
+      then:
+        # prevent enter deepsleep on boot user switch sleep/loop measure button
+        - if:
+            condition:
+              - lambda: "return id(wake_up_reason) == 4;" #ota 
+            then:
+              - logger.log: "OTA"
+              - switch.turn_on: deepsleep_switch
+              - light.turn_on: moisture_pwm_switch
+              - wifi.enable:
+            else:
+              - if:
+                  condition:
+                    sensor.in_range:
+                      below: 3.1
+                      id: ina_voltage
+                  then:
+                    - logger.log: "LOW V."
+                    - deep_sleep.enter: deep_sleep_component
+                  else:
+                    - logger.log: "NORMAL"
+                    - wifi.enable:
+                    - light.turn_on: moisture_pwm_switch
+                    - light.turn_on: indicatorled
+                    - delay: 50ms
+                    - light.turn_off: indicatorled
+                    - delay: $stabilize_time
+
+                    # wait mqtt
+                    - wait_until:  
+                        condition: mqtt.connected
+                        timeout: 30s
+                    # - delay: 400ms
+                    # - text_sensor.template.publish:  # Send online state when mqtt is connected 
+                    #     id: online_status
+                    #     state: "Online"
+              # - delay: 350ms
+              # - component.update: soil_moisture
+
+              #- delay: 1s
+              #- component.update: soil_moisture
+              # prevent enter deepsleep on boot user switch sleep/loop measure button
+
+  on_shutdown: # send offline state when mcu power off or go to deep sleep
+    priority: 0.0 # tested more settings the server does not always receive the value
+    then:
+      - text_sensor.template.publish:
+          id: online_status
+          state: "Offline"
+      - component.update: up_time
+
+# Enable logging
+logger:
+  level: INFO
+  logs:
+    component: ERROR
+
+#-------------------------------------------
+# MQTT
+# https://mqtt-explorer.com/
+#-------------------------------------------
+mqtt:
+  broker: '192.168.31.212'
+  username: !secret mqtt_username
+  password: !secret mqtt_password
+  discovery: true
+  reboot_timeout: 120s
+  # Update sensors after connected to mqtt
+  on_connect:
+    - text_sensor.template.publish:
+        id: online_status
+        state: online 
+    - logger.log: "signal"
+    - component.update: signal_strange
+    - logger.log: "temp_air"
+    - component.update: temp_air1
+    - logger.log: "temp_soil"
+    - component.update: temp_soil
+    - logger.log: "light"
+    - component.update: ambient_light
+    - delay: 500ms
+    - logger.log: "soil"
+    - component.update: moisture_raw
+
+  # online first message
+  birth_message:
+    topic: $device_name/status_on
+    payload: online
+
+  # drop connected message
+  will_message:
+    topic: $device_name/status_unavailable
+    payload: unavailable
+  # offline last message
+  shutdown_message:
+    topic: $device_name/status_off
+    payload: offline
+
+  # OTA message
+  on_message:
+    - topic: "$device_name/ota_mode"
+      payload: 'ON'
+      then:
+        - deep_sleep.prevent: deep_sleep_component
+        - switch.turn_on: deepsleep_switch
+        - logger.log: "OTA blocking deep sleep"
+
+    - topic: $device_name/ota_mode
+      payload: 'OFF'
+      then:
+        - logger.log: "Ota finished back to deep sleep"
+        - deep_sleep.allow: deep_sleep_component
+
+ota:
+  password: !secret ota_pass
+  on_end:
+    then:
+      - mqtt.publish:
+          topic: $device_name/ota_mode
+          payload: 'OFF'
+          retain: true
+
+#-------------------------------------------
+# WIFI
+#-------------------------------------------
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  #power_save_mode: light
+  enable_on_boot: false
+  #fast_connect: True
+  #output_power: 8.5dB
+  manual_ip:
+    static_ip: 192.168.31.222
+    gateway: 192.168.31.1
+    subnet: 255.255.255.0
+
+  ap:
+    ssid: "$device_name Hotspot"
+    password: "passplantgarden"
+
+# captive_portal:
+
+#-------------------------------------------
+# EXTERNAL AND CUSTOM COMPONENT
+#-------------------------------------------
+external_components:
+  - source: 
+      type: local
+      path: custom_component
+    components:
+      # change priority on i2c
+      # Source: https://www.homeassistant-cz.cz/viewtopic.php?f=56&t=1167&p=14296
+      - i2c
+
+#-------------------------------------------
+# GLOBALS
+#-------------------------------------------
+globals:
+#-------------------------------------------
+# Global set wake up 
+#-------------------------------------------
+  - id: wake_up_reason
+    type: int
+    restore_value: no
+    initial_value: '0'
+
+#-------------------------------------------
+# Restore global battery value
+#-------------------------------------------
+#  - id: battery_global_value
+#    type: float
+#    restore_value: yes
+#    initial_value: '4.0'
+
+#-------------------------------------------
+# DEEP SLEEP
+#-------------------------------------------
+deep_sleep:
+  id: deep_sleep_component
+  sleep_duration: 1800sec
+  run_duration: 60sec
+
+#-------------------------------------------
+# STATUS LED
+#-------------------------------------------
+status_led:
+  pin:
+    number: ${status_led}
+    inverted: True
+    
+#-------------------------------------------
+# SENSORS
+#-------------------------------------------
+sensor:
+#-------------------------------------------
+# Uptime
+#-------------------------------------------
+  - platform: uptime
+    device_class: duration
+    name: MCU Uptime
+    id: up_time
+    icon: mdi:clock-start
+    unit_of_measurement: "s"
+    #update_interval: 60s
+
+#-------------------------------------------
+# Who enable MCU
+#-------------------------------------------
+  - platform: template
+    id: wake_up
+    accuracy_decimals: 0
+    internal: true
+    lambda: |-
+      return (id(wake_up_reason));
+    on_value:
+      - if:
+          condition:
+            lambda: return id(wake_up).state;
+          then:
+            - if:
+                condition:
+                  lambda: "return id(wake_up_reason) == 4;"
+                then:
+                  text_sensor.template.publish:
+                    id: start_enable
+                    state: "OTA"
+            - if:
+                condition:
+                  lambda: "return id(wake_up_reason) == 5;"
+                then:
+                  text_sensor.template.publish:
+                    id: start_enable
+                    state: "DEEP SLEEP"
+            - if:
+                condition:
+                  lambda: "return id(wake_up_reason) == 6;"
+                then:
+                  text_sensor.template.publish:
+                    id: start_enable
+                    state: "RESET"
+            #- if:
+            #    condition:
+            #      lambda: "return id(wake_up_reason) == 0;"
+            #    then:
+            #      text_sensor.template.publish:
+            #        id: start_enable
+            #        state: "POWER"
+          else:
+            text_sensor.template.publish:
+              id: start_enable
+              state: "POWER"
+     
+#-------------------------------------------
+# Wifi signal component
+#-------------------------------------------
+  - platform: wifi_signal
+    name: "MCU Signal"
+    id: "signal_strange"
+    update_interval: never
+
+#-------------------------------------------
+# ADC - Moisture soil
+# 2x Supercap 5.5V 22F
+#-------------------------------------------
+  - platform: adc
+    pin: $moisture_adc_pin
+    name: "Moisture Raw"
+    icon: mdi:pulse
+    id: moisture_raw
+    update_interval: never
+    unit_of_measurement: "mV"
+    accuracy_decimals: 0
+    filters:
+      multiply: 1000
+    #on_value:
+    #  then:
+    #    - component.update: battery_percent
+    #    - globals.set:
+    #        id: battery_global_value
+    #        value: !lambda 'return x;'
+    #device_class: battery
+    #entity_category: diagnostic
+    #icon: mdi:home-battery
+
+    on_raw_value:
+      - if:
+          condition:
+            sensor.in_range:
+              id: moisture_raw
+              below: 700 # opraviť 
+          then:
+            text_sensor.template.publish:
+              id: soil_status
+              state: "In Soil"
+          else: 
+            text_sensor.template.publish:
+              id: soil_status
+              state: No Soil / Stable 1 Day
+      - component.update: soil_moisture
+
+#-------------------------------------------
+# PULSE COUNTER - Soil moisture sensor
+#-------------------------------------------
+  - platform: template
+    id: soil_moisture
+    name: "Soil Moisture"
+    update_interval: never
+    lambda: "return id(moisture_raw).state;"
+    unit_of_measurement: "%"
+    icon: mdi:water-percent
+    filters:
+      - calibrate_linear:
+         - 800 -> 0
+         - 320 -> 100
+      - lambda: 'return max((float)0.0, x);'   # No value lower than 0  
+      - lambda: 'return min((float)100.0, x);' # No value greater than 100
+    on_value:
+      #- if: 
+      #    condition:
+      #      not:
+      #        - lambda: "return id(wake_up_reason) == 4;" # OTA 
+      #    then:
+      #      - delay: 100ms
+      #      - switch.turn_off: power_switch
+      - if:
+          condition:
+            switch.is_off: deepsleep_switch
+          then:
+            - text_sensor.template.publish:
+                id: online_status
+                state: "Offline"
+            - delay: 2s
+            - deep_sleep.enter: deep_sleep_component
+
+#-------------------------------------------
+# INA219 - Battery measure
+#-------------------------------------------
+  - platform: ina219
+    address: 0x44
+    shunt_resistance: 0.1 ohm
+    current:
+      name: "MCU Current"
+      filters:
+        multiply: 1000
+      accuracy_decimals: 0
+      unit_of_measurement: "mA"
+      entity_category: diagnostic
+    power:
+      name: "MCU Power"
+      entity_category: diagnostic
+    bus_voltage:
+      name: "Battery Voltage"
+      entity_category: diagnostic
+      id: ina_voltage
+      icon: mdi:pulse
+      on_value:
+        component.update: battery_percent
+    max_voltage: "$ina_max_voltage" 
+    max_current: "$ina_max_current" 
+    update_interval: 10s
+
+#-------------------------------------------
+# Template - Battery percent
+#-------------------------------------------
+  - platform: template
+    name: "Battery 1"
+    unit_of_measurement: "%"
+    id: battery_percent
+    update_interval: never
+    lambda: "return id(ina_voltage).state;"
+    filters:
+      - calibrate_linear:
+          - 3.5 -> 0 # 3.4
+          - 5.5 -> 100
+      - lambda: 'return max((float)0.0, x);' # No value lower than 0
+      - lambda: 'return min((float)100.0, x);' # No value greater than 100
+    device_class: battery
+    entity_category: diagnostic
+
+#-------------------------------------------
+# Template - Battery global set
+#-------------------------------------------
+#  - platform: template
+#    name: "${friendly_name} Battery global"
+#    id: battery_temp_global
+#    accuracy_decimals: 1
+#    lambda: |-
+#      return (id(battery_global_value));
+#    internal: true
+
+#-------------------------------------------
+# Ambient light sensor - LUX sensor - BH1750
+#-------------------------------------------
+  - platform: bh1750
+    name: "Outdoor Illuminance"
+    address: 0x23
+    accuracy_decimals: 0
+    update_interval: 10s
+    id: ambient_light
+    device_class: illuminance
+
+#-------------------------------------------
+# Temperature pressure sensor - HTU21D
+#-------------------------------------------
+  - platform: htu21d
+    id: temp_air1
+    temperature:
+      name: "Outdoor Temperature"
+    humidity:
+      name: "Outdoor Humidity"
+    heater:
+      name: "Heater"
+      internal: true
+
+    update_interval: 5s
+
+#-------------------------------------------
+# DALLAS - Temperature sensor
+# DS18B20 
+# connected 4.7k to VCC 
+#-------------------------------------------
+# Temperature solar panel
+  - platform: dallas
+    address: 0xa13c24f648b38e28
+    name: "Soil Temperature Raw"
+    id: temp_soil_dallas
+    #unit_of_measurement: "°C"
+    #icon: mdi:thermometer
+    filters:
+      filter_out: nan
+    internal: True
+
+  - platform: template
+    name: "Soil Temperature"
+    id: temp_soil
+    unit_of_measurement: "°C"
+    icon: mdi:thermometer
+    lambda: "return id(temp_soil_dallas).state;"
+    update_interval: never
+
+#-------------------------------------------
+# OUTPUTS
+#-------------------------------------------
+output:
+#-------------------------------------------
+# PWM - moisture power pwm
+#-------------------------------------------
+  - platform: esp8266_pwm
+    pin: $moisture_pwm_pin
+    frequency: "$moisture_frequency"
+    id: moisture_pwm_output
+
+#-------------------------------------------
+# Led Red - infolight
+#-------------------------------------------
+  - id: indicator_led
+    platform: gpio
+    pin: "$indicator_led"
+    inverted: True
+
+#-------------------------------------------
+# LIGHTS - PWM
+#-------------------------------------------
+light:
+#-------------------------------------------
+# PWM - moisture power pwm
+#-------------------------------------------
+  - platform: monochromatic
+    output: moisture_pwm_output
+    name: "Moisture PWM"
+    id: moisture_pwm_switch
+    gamma_correct: 1.0 # gamma correction 1.0 = 100% = 100% brightness or pwm 0.5 = 50% pwm square wave pwm
+    icon: mdi:square-wave
+    on_turn_on:
+      then:
+        #- output.esp8266_pwm.set_frequency:
+        #    id: moisture_pwm_output
+        #    frequency: "$moisture_frequency"
+        - light.turn_on:
+            id: moisture_pwm_switch
+            brightness: "$moisture_brightness"
+
+#-------------------------------------------
+# Led Red - infolight
+#-------------------------------------------
+  - platform: binary
+    output: indicator_led
+    id: indicatorled
+    internal: True
+    restore_mode: ALWAYS_OFF
+
+number:
+#  - platform: template
+#    name: Frequency
+#    optimistic: true
+#    min_value: 1000
+#    max_value: 2000000
+#    step: 100
+#    on_value:
+#      then:
+#        - output.esp8266_pwm.set_frequency:
+#            id: moisture_pwm_output
+#            frequency: !lambda "return x;"
+
+#-------------------------------------------
+# SWITCHES
+#-------------------------------------------
+switch:
+#-------------------------------------------
+# Deep Sleep and continual measure enable switch
+#-------------------------------------------
+  - platform: template
+    name: "Sleep/Loop Measure"
+    #icon: mdi:power-sleep
+    icon: mdi:move-resize-variant
+    id: deepsleep_switch
+    restore_mode: DISABLED 
+    entity_category: config
+    optimistic: True
+    on_turn_on:
+      then:
+        - delay: 10ms
+        - logger.log: 
+            format: "DEEP SLEEP DISABLE"
+            level: warn
+        - deep_sleep.prevent: deep_sleep_component
+
+    on_turn_off:
+      then:
+        - logger.log: 
+            format: "DEEP SLEEP ENABLE"
+            level: warn
+        - switch.turn_off: power_switch
+        - delay: 2s
+        - deep_sleep.enter: deep_sleep_component
+
+#-------------------------------------------
+# Power mofset switch
+# DALLAS, MOISTURE
+#-------------------------------------------
+  - platform: gpio
+    name: "Power Switch"
+    icon: mdi:move-resize-variant
+    restore_mode: ALWAYS_ON
+    pin: $power_pin
+    id: power_switch
+    entity_category: config
+    internal: true
+ 
+#-------------------------------------------
+# BUTTONS
+#-------------------------------------------
+button: 
+#-------------------------------------------
+# RESTART
+# restart = reset prevent deepsleep
+#-------------------------------------------
+  - platform: restart
+    name: "MCU Restart"
+    entity_category: diagnostic
+
+#-------------------------------------------
+# INTERVALS - measurement cycling battery
+#-------------------------------------------
+interval:
+  # cycling measure
+  - interval: 5s
+    then:
+      - if:
+          condition:
+            - switch.is_on: deepsleep_switch
+          then:
+            - component.update: ambient_light
+            - component.update: signal_strange
+            - component.update: temp_air1
+            - component.update: moisture_raw
+            - component.update: temp_soil
+  # led status blinking
+  - interval: 2s
+    then:
+      - if:
+          condition:
+            mqtt.connected
+          then:
+            - light.turn_on: indicatorled
+            - delay: 50ms
+            - light.turn_off: indicatorled
+
+#-------------------------------------------
+# TEXT SENSORS
+#-------------------------------------------
+text_sensor:
+#-------------------------------------------
+# Soil Moisture
+#-------------------------------------------
+  - platform: template
+    name: "Soil status"
+    icon: mdi:flower
+    id: soil_status
+    lambda: |-
+       return {"Loading"};
+    update_interval: never
+    
+#-------------------------------------------
+# Defines who started esp
+#-------------------------------------------
+  - platform: template
+    name: "MCU Enable"
+    id: start_enable
+    icon: "mdi:power-standby"
+    entity_category: diagnostic
+    lambda: return {"Loading"};
+    update_interval: never
+
+#-------------------------------------------
+# Online state mcu
+# bug no send online or offline does always state 
+#-------------------------------------------
+  - platform: template
+    id: online_status
+    name: "MCU Status"
+    lambda: |-
+      return {"Loading"};
+    icon: "mdi:power-standby"
+    update_interval: never
+    entity_category: diagnostic
+
+#-------------------------------------------
+# BINARY SENSORS
+#-------------------------------------------
+binary_sensor:
+
