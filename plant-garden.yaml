@@ -683,7 +683,7 @@ sensor:
       float moisture =     id(soil_moisture).state;
       float temp =         id(temp_soil).state;
       // conductivity correction
-      float ec_raw = conductivity * 0.5;
+      float ec_raw = conductivity * 0.2;
       
       // moisture correction
       float moisture_factor = 1.0;
